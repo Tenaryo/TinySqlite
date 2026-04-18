@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -15,8 +16,20 @@ class Database {
     uint32_t page_size_;
     uint32_t num_tables_;
 
+    struct SchemaEntry {
+        std::string_view type;
+        std::string_view name;
+        uint32_t rootpage;
+        std::string_view sql;
+    };
+
+    std::vector<SchemaEntry> schema_;
+
     explicit Database(std::vector<std::byte> data)
-        : data_(std::move(data)), page_size_(read_u16_be(16)), num_tables_(read_u16_be(103)) {}
+        : data_(std::move(data)), page_size_(read_u16_be(16)), num_tables_(read_u16_be(103)) {
+        for (auto offset : cell_offsets())
+            schema_.push_back(parse_schema_entry(offset));
+    }
 
     auto read_u16_be(size_t offset) const noexcept -> uint16_t {
         return static_cast<uint16_t>(data_[offset]) << 8 | static_cast<uint16_t>(data_[offset + 1]);
@@ -65,7 +78,7 @@ class Database {
         return offsets;
     }
 
-    auto parse_table_name(size_t cell_offset) const -> std::string_view {
+    auto parse_schema_entry(size_t cell_offset) const -> SchemaEntry {
         auto pos = cell_offset;
         pos += read_varint(pos).consumed;
         pos += read_varint(pos).consumed;
@@ -74,21 +87,41 @@ class Database {
         auto header_size_vr = read_varint(pos);
         pos += header_size_vr.consumed;
 
-        uint64_t serial_types[3];
-        for (int i = 0; i < 3; ++i) {
+        static constexpr int kNumFields = 5;
+        uint64_t serial_types[kNumFields];
+        for (int i = 0; i < kNumFields; ++i) {
             auto vr = read_varint(pos);
             serial_types[i] = vr.value;
             pos += vr.consumed;
         }
 
-        auto body_start = header_start + header_size_vr.value;
-        size_t body_offset = 0;
-        for (int i = 0; i < 2; ++i)
-            body_offset += serial_type_size(serial_types[i]);
+        auto body = header_start + header_size_vr.value;
+        size_t off = 0;
 
-        auto tbl_name_size = serial_type_size(serial_types[2]);
-        return {reinterpret_cast<const char*>(data_.data() + body_start + body_offset),
-                tbl_name_size};
+        auto read_text = [&](int idx) -> std::string_view {
+            auto sz = serial_type_size(serial_types[idx]);
+            auto sv =
+                std::string_view{reinterpret_cast<const char*>(data_.data() + body + off), sz};
+            off += sz;
+            return sv;
+        };
+
+        auto read_uint = [&](int idx) -> uint32_t {
+            auto sz = serial_type_size(serial_types[idx]);
+            uint32_t val = 0;
+            for (size_t j = 0; j < sz; ++j)
+                val = (val << 8) | static_cast<uint8_t>(data_[body + off + j]);
+            off += sz;
+            return val;
+        };
+
+        auto type = read_text(0);
+        auto name = read_text(1);
+        read_text(2);
+        auto rootpage = serial_types[3] == 0 ? 0u : read_uint(3);
+        auto sql = serial_types[4] == 0 ? std::string_view{} : read_text(4);
+
+        return {.type = type, .name = name, .rootpage = rootpage, .sql = sql};
     }
   public:
     static auto open(std::string_view path) -> std::expected<Database, std::string> {
@@ -113,14 +146,23 @@ class Database {
 
     auto table_names() const -> std::vector<std::string_view> {
         std::vector<std::string_view> names;
-        names.reserve(num_tables_);
-        for (auto offset : cell_offsets()) {
-            auto name = parse_table_name(offset);
-            if (!name.starts_with("sqlite_"))
-                names.push_back(name);
-        }
+        for (const auto& entry : schema_)
+            if (!entry.name.starts_with("sqlite_"))
+                names.push_back(entry.name);
         std::ranges::sort(names);
         return names;
+    }
+
+    auto rootpage(std::string_view table_name) const -> std::expected<uint32_t, std::string> {
+        for (const auto& entry : schema_)
+            if (entry.name == table_name)
+                return entry.rootpage;
+        return std::unexpected(std::format("Error: no such table: {}", table_name));
+    }
+
+    auto count_rows(uint32_t page_number) const -> uint32_t {
+        auto page_offset = static_cast<size_t>(page_number - 1) * page_size_;
+        return read_u16_be(page_offset + 3);
     }
 };
 
@@ -132,5 +174,14 @@ auto handle_command(const Database& db, std::string_view command, std::ostream& 
         for (const auto& name : db.table_names())
             out << name << ' ';
         out << '\n';
+    } else if (command.starts_with("SELECT COUNT")) {
+        auto last_space = command.rfind(' ');
+        auto table_name = command.substr(last_space + 1);
+        auto rp = db.rootpage(table_name);
+        if (!rp) {
+            out << rp.error() << '\n';
+            return;
+        }
+        out << db.count_rows(*rp) << '\n';
     }
 }
