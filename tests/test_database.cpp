@@ -48,5 +48,84 @@ auto main() -> int {
         assert(out.str() == "4\n");
     }
 
+    {
+        auto sel = parse_select("SELECT name FROM apples");
+        assert(sel.has_value());
+        assert(sel->column == "name");
+        assert(sel->table == "apples");
+        assert(!sel->is_count);
+    }
+
+    {
+        auto sel = parse_select("SELECT color FROM oranges");
+        assert(sel.has_value());
+        assert(sel->column == "color");
+        assert(sel->table == "oranges");
+        assert(!sel->is_count);
+    }
+
+    {
+        auto sel = parse_select("SELECT COUNT(*) FROM apples");
+        assert(sel.has_value());
+        assert(sel->is_count);
+        assert(sel->table == "apples");
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        auto cols = db->parse_create_table("CREATE TABLE apples\n(\n\tid integer primary key "
+                                           "autoincrement,\n\tname text,\n\tcolor text\n)");
+        assert(cols.size() == 3);
+        assert(cols[0] == "id");
+        assert(cols[1] == "name");
+        assert(cols[2] == "color");
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        auto cols = db->parse_create_table("CREATE TABLE oranges\n(\n\tid integer primary key "
+                                           "autoincrement,\n\tname text,\n\tdescription text\n)");
+        assert(cols.size() == 3);
+        assert(cols[0] == "id");
+        assert(cols[1] == "name");
+        assert(cols[2] == "description");
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        auto vals = db->read_column_values(2, 1);
+        assert(vals.size() == 4);
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Granny Smith"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Fuji"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Honeycrisp"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Golden Delicious"; }));
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        auto vals = db->read_column_values(2, 2);
+        assert(vals.size() == 4);
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Light Green"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Red"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Blush Red"; }));
+        assert(std::ranges::any_of(vals, [](auto v) { return v == "Yellow"; }));
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT name FROM apples", out);
+        auto output = out.str();
+        assert(output.find("Granny Smith") != std::string::npos);
+        assert(output.find("Fuji") != std::string::npos);
+        assert(output.find("Honeycrisp") != std::string::npos);
+        assert(output.find("Golden Delicious") != std::string::npos);
+    }
+
     return EXIT_SUCCESS;
 }
