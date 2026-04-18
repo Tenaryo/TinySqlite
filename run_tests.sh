@@ -18,6 +18,10 @@ echo
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+for db in ../*.db; do
+    [ -f "$db" ] && ln -sfn "$db" "$(basename "$db")"
+done
+
 if [ ! -f "CMakeCache.txt" ]; then
     echo -e "${YELLOW}Configuring CMake...${NC}"
     cmake .. -DCMAKE_BUILD_TYPE=Debug
