@@ -12,6 +12,55 @@
 #include <string_view>
 #include <vector>
 
+struct SelectStatement {
+    std::string_view column;
+    std::string_view table;
+    bool is_count = false;
+};
+
+auto parse_select(std::string_view sql) -> std::expected<SelectStatement, std::string> {
+    auto to_lower = [](char c) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    };
+
+    auto find_ci = [&](std::string_view haystack, std::string_view needle) -> size_t {
+        if (haystack.size() < needle.size())
+            return std::string_view::npos;
+        for (size_t i = 0; i <= haystack.size() - needle.size(); ++i) {
+            bool match = true;
+            for (size_t j = 0; j < needle.size(); ++j) {
+                if (to_lower(haystack[i + j]) != to_lower(needle[j])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return i;
+        }
+        return std::string_view::npos;
+    };
+
+    auto from_pos = find_ci(sql, "FROM");
+    if (from_pos == std::string_view::npos)
+        return std::unexpected("Invalid SELECT: missing FROM");
+
+    auto after_select = sql.find_first_not_of(' ', 6);
+    auto col_region = sql.substr(after_select, from_pos - after_select);
+    auto col_trimmed = col_region;
+    while (!col_trimmed.empty() && col_trimmed.back() == ' ')
+        col_trimmed.remove_suffix(1);
+
+    bool is_count = find_ci(col_trimmed, "COUNT(*)") != std::string_view::npos;
+
+    auto tbl_start = sql.find_first_not_of(' ', from_pos + 4);
+
+    return SelectStatement{
+        .column = col_trimmed,
+        .table = sql.substr(tbl_start),
+        .is_count = is_count,
+    };
+}
+
 class Database {
     std::vector<std::byte> data_;
     uint32_t page_size_;
@@ -167,31 +216,128 @@ class Database {
         auto page_offset = static_cast<size_t>(page_number - 1) * page_size_;
         return read_u16_be(page_offset + 3);
     }
+
+    auto table_sql(std::string_view table_name) const -> std::string_view {
+        for (const auto& entry : schema_)
+            if (std::ranges::equal(entry.name, table_name, [](char a, char b) {
+                    return std::tolower(a) == std::tolower(b);
+                }))
+                return entry.sql;
+        return {};
+    }
+
+    auto parse_create_table(std::string_view sql) const -> std::vector<std::string_view> {
+        auto paren_open = sql.find('(');
+        auto paren_close = sql.rfind(')');
+        auto body = sql.substr(paren_open + 1, paren_close - paren_open - 1);
+
+        std::vector<std::string_view> columns;
+        size_t pos = 0;
+        while (pos < body.size()) {
+            auto comma = body.find(',', pos);
+            auto end = comma == std::string_view::npos ? body.size() : comma;
+            auto def = body.substr(pos, end - pos);
+
+            auto trim = [](std::string_view s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' ||
+                                      s.front() == '\r'))
+                    s.remove_prefix(1);
+                while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' ||
+                                      s.back() == '\r'))
+                    s.remove_suffix(1);
+                return s;
+            };
+
+            auto trimmed = trim(def);
+            auto space = trimmed.find_first_of(" \t\n\r");
+            if (space != std::string_view::npos)
+                columns.push_back(trimmed.substr(0, space));
+
+            pos = end + 1;
+        }
+        return columns;
+    }
+
+    auto read_column_values(uint32_t page_number,
+                            size_t column_index) const -> std::vector<std::string_view> {
+        auto page_offset = static_cast<size_t>(page_number - 1) * page_size_;
+        auto num_cells = read_u16_be(page_offset + 3);
+
+        std::vector<std::string_view> values;
+        values.reserve(num_cells);
+
+        for (uint32_t i = 0; i < num_cells; ++i) {
+            auto cell_ptr = page_offset + read_u16_be(page_offset + 8 + i * 2);
+
+            auto pos = cell_ptr;
+            pos += read_varint(pos).consumed;
+            pos += read_varint(pos).consumed;
+
+            auto header_start = pos;
+            auto header_size_vr = read_varint(pos);
+            pos += header_size_vr.consumed;
+            auto header_end = header_start + header_size_vr.value;
+
+            size_t body_offset = 0;
+
+            for (size_t col = 0; pos < header_end; ++col) {
+                auto vr = read_varint(pos);
+                pos += vr.consumed;
+                auto sz = serial_type_size(vr.value);
+
+                if (col == column_index) {
+                    if (vr.value >= 13 && vr.value % 2 == 1) {
+                        values.push_back(std::string_view{
+                            reinterpret_cast<const char*>(data_.data() + header_start +
+                                                          header_size_vr.value + body_offset),
+                            sz});
+                    }
+                    break;
+                }
+                body_offset += sz;
+            }
+        }
+        return values;
+    }
 };
 
 auto handle_command(const Database& db, std::string_view command, std::ostream& out) -> void {
-    auto istarts_with = [](std::string_view str, std::string_view prefix) {
-        return str.size() >= prefix.size() &&
-               std::ranges::equal(str.substr(0, prefix.size()), prefix, [](char a, char b) {
-                   return std::tolower(a) == std::tolower(b);
-               });
-    };
-
-    if (command == ".dbinfo") {
-        out << "database page size: " << db.page_size() << '\n'
-            << "number of tables: " << db.num_tables() << '\n';
-    } else if (command == ".tables") {
-        for (const auto& name : db.table_names())
-            out << name << ' ';
-        out << '\n';
-    } else if (istarts_with(command, "SELECT COUNT")) {
-        auto last_space = command.rfind(' ');
-        auto table_name = command.substr(last_space + 1);
-        auto rp = db.rootpage(table_name);
+    if (command.starts_with('.')) {
+        if (command == ".dbinfo") {
+            out << "database page size: " << db.page_size() << '\n'
+                << "number of tables: " << db.num_tables() << '\n';
+        } else if (command == ".tables") {
+            for (const auto& name : db.table_names())
+                out << name << ' ';
+            out << '\n';
+        }
+    } else {
+        auto sel = parse_select(command);
+        if (!sel) {
+            out << sel.error() << '\n';
+            return;
+        }
+        auto rp = db.rootpage(sel->table);
         if (!rp) {
             out << rp.error() << '\n';
             return;
         }
-        out << db.count_rows(*rp) << '\n';
+        if (sel->is_count) {
+            out << db.count_rows(*rp) << '\n';
+        } else {
+            auto sql = db.table_sql(sel->table);
+            auto columns = db.parse_create_table(sql);
+            size_t col_idx = 0;
+            for (size_t i = 0; i < columns.size(); ++i) {
+                if (std::ranges::equal(columns[i], sel->column, [](char a, char b) {
+                        return std::tolower(a) == std::tolower(b);
+                    })) {
+                    col_idx = i;
+                    break;
+                }
+            }
+            for (const auto& val : db.read_column_values(*rp, col_idx))
+                out << val << '\n';
+        }
     }
 }
