@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -155,7 +156,9 @@ class Database {
 
     auto rootpage(std::string_view table_name) const -> std::expected<uint32_t, std::string> {
         for (const auto& entry : schema_)
-            if (entry.name == table_name)
+            if (std::ranges::equal(entry.name, table_name, [](char a, char b) {
+                    return std::tolower(a) == std::tolower(b);
+                }))
                 return entry.rootpage;
         return std::unexpected(std::format("Error: no such table: {}", table_name));
     }
@@ -167,6 +170,13 @@ class Database {
 };
 
 auto handle_command(const Database& db, std::string_view command, std::ostream& out) -> void {
+    auto istarts_with = [](std::string_view str, std::string_view prefix) {
+        return str.size() >= prefix.size() &&
+               std::ranges::equal(str.substr(0, prefix.size()), prefix, [](char a, char b) {
+                   return std::tolower(a) == std::tolower(b);
+               });
+    };
+
     if (command == ".dbinfo") {
         out << "database page size: " << db.page_size() << '\n'
             << "number of tables: " << db.num_tables() << '\n';
@@ -174,7 +184,7 @@ auto handle_command(const Database& db, std::string_view command, std::ostream& 
         for (const auto& name : db.table_names())
             out << name << ' ';
         out << '\n';
-    } else if (command.starts_with("SELECT COUNT")) {
+    } else if (istarts_with(command, "SELECT COUNT")) {
         auto last_space = command.rfind(' ');
         auto table_name = command.substr(last_space + 1);
         auto rp = db.rootpage(table_name);
