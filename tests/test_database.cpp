@@ -196,5 +196,37 @@ auto main() -> int {
         assert(out.str() == "Golden Delicious\n");
     }
 
+    {
+        auto db = Database::open("superheroes.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT id, name FROM superheroes WHERE eye_color = 'Pink Eyes'", out);
+        assert(out.str() ==
+               "297|Stealth (New Earth)\n"
+               "790|Tobias Whale (New Earth)\n"
+               "1085|Felicity (New Earth)\n"
+               "2729|Thrust (New Earth)\n"
+               "3289|Angora Lapin (New Earth)\n"
+               "3913|Matris Ater Clementia (New Earth)\n");
+    }
+
+    {
+        auto db = Database::open("superheroes.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT COUNT(*) FROM superheroes", out);
+        assert(out.str() == "6895\n");
+    }
+
+    {
+        auto db = Database::open("superheroes.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT id FROM superheroes", out);
+        auto output = out.str();
+        auto count = std::ranges::count(output, '\n');
+        assert(count == 6895);
+    }
+
     return EXIT_SUCCESS;
 }
