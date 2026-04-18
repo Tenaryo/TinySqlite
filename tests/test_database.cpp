@@ -153,5 +153,48 @@ auto main() -> int {
         assert(output.find("Golden Delicious|Yellow") != std::string::npos);
     }
 
+    {
+        auto sel = parse_select("SELECT name, color FROM apples WHERE color = 'Yellow'");
+        assert(sel.has_value());
+        assert(sel->columns.size() == 2);
+        assert(sel->columns[0] == "name");
+        assert(sel->columns[1] == "color");
+        assert(sel->table == "apples");
+        assert(!sel->is_count);
+        assert(sel->where.has_value());
+        assert(sel->where->column == "color");
+        assert(sel->where->value == "Yellow");
+    }
+
+    {
+        auto sel = parse_select("SELECT name FROM apples");
+        assert(sel.has_value());
+        assert(!sel->where.has_value());
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT name, color FROM apples WHERE color = 'Yellow'", out);
+        assert(out.str() == "Golden Delicious|Yellow\n");
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT name, color FROM apples WHERE color = 'Purple'", out);
+        assert(out.str().empty());
+    }
+
+    {
+        auto db = Database::open("sample.db");
+        assert(db.has_value());
+        std::ostringstream out;
+        handle_command(*db, "SELECT name FROM apples WHERE color = 'Yellow'", out);
+        assert(out.str() == "Golden Delicious\n");
+    }
+
     return EXIT_SUCCESS;
 }
