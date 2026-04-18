@@ -1,4 +1,4 @@
-#include "database.hpp"
+#include "command.hpp"
 #include <iostream>
 
 int main(int argc, char* argv[]) {

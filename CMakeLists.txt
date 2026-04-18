@@ -18,6 +18,13 @@ target_compile_options(sqlite_core INTERFACE
 add_executable(sqlite src/main.cpp)
 target_link_libraries(sqlite PRIVATE sqlite_core)
 
+option(ENABLE_SANITIZERS "Enable Address and Undefined Behavior Sanitizers" OFF)
+
+if(ENABLE_SANITIZERS)
+    target_compile_options(sqlite_core INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(sqlite_core INTERFACE -fsanitize=address,undefined)
+endif()
+
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)
     add_subdirectory(tests)
